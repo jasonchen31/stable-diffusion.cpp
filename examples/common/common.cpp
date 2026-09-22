@@ -260,7 +260,30 @@ void add_log_options(ArgOptions& options, sd_log_level_t& level) {
 }
 
 bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& options_list) {
-    bool invalid_arg = false;
+    // Expand --option=value into --option value so both forms are accepted.
+    std::vector<std::string> expanded_storage;
+    std::vector<const char*> expanded_argv;
+    expanded_storage.reserve(static_cast<size_t>(argc));
+    expanded_argv.reserve(static_cast<size_t>(argc) * 2);
+    expanded_argv.push_back(argv[0]);
+    for (int i = 1; i < argc; i++) {
+        std::string entry = argv_to_utf8(i, argv);
+        if (entry.size() > 2 && entry[0] == '-' && entry[1] == '-') {
+            size_t eq = entry.find('=');
+            if (eq != std::string::npos) {
+                expanded_storage.push_back(entry.substr(0, eq));
+                expanded_storage.push_back(entry.substr(eq + 1));
+                continue;
+            }
+        }
+        expanded_storage.push_back(std::move(entry));
+    }
+    for (const auto& entry : expanded_storage) {
+        expanded_argv.push_back(entry.c_str());
+    }
+    int expanded_argc      = static_cast<int>(expanded_argv.size());
+    const char** args      = expanded_argv.data();
+    bool invalid_arg       = false;
     std::string arg;
 
     auto match_and_apply = [&](auto& opts, auto&& apply_fn) -> bool {
@@ -275,13 +298,13 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
     };
 
     bool valid = false;
-    for (int i = 1; i < argc; i++) {
-        arg            = argv[i];
+    for (int i = 1; i < expanded_argc; i++) {
+        arg            = args[i];
         bool found_arg = false;
 
         for (auto& options : options_list) {
             if (match_and_apply(options.string_options, [&](auto& option) {
-                    if (++i >= argc) {
+                    if (++i >= expanded_argc) {
                         invalid_arg = true;
                         return;
                     }
@@ -289,21 +312,21 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
                         if (option.concat > 0 && option.concat <= 0xff) {
                             *option.target += static_cast<char>(option.concat);
                         }
-                        *option.target += argv_to_utf8(i, argv);
+                        *option.target += args[i];
                     } else {
-                        *option.target = argv_to_utf8(i, argv);
+                        *option.target = args[i];
                     }
                     found_arg = true;
                 }))
                 break;
 
             if (match_and_apply(options.int_options, [&](auto& option) {
-                    if (++i >= argc) {
+                    if (++i >= expanded_argc) {
                         invalid_arg = true;
                         return;
                     }
                     try {
-                        *option.target = std::stoi(argv[i]);
+                        *option.target = std::stoi(args[i]);
                     } catch (const std::invalid_argument&) {
                         invalid_arg = true;
                     }
@@ -312,12 +335,12 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
                 break;
 
             if (match_and_apply(options.float_options, [&](auto& option) {
-                    if (++i >= argc) {
+                    if (++i >= expanded_argc) {
                         invalid_arg = true;
                         return;
                     }
                     try {
-                        *option.target = std::stof(argv[i]);
+                        *option.target = std::stof(args[i]);
                     } catch (const std::invalid_argument&) {
                         invalid_arg = true;
                     }
@@ -332,7 +355,7 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
                 break;
 
             if (match_and_apply(options.manual_options, [&](auto& option) {
-                    int ret = option.cb(argc, argv, i, valid);
+                    int ret = option.cb(expanded_argc, args, i, valid);
                     if (ret < 0) {
                         invalid_arg = true;
                         return;
@@ -346,7 +369,7 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
         if (invalid_arg) {
             if (!valid) {
                 LOG_ERROR("error: invalid parameter for argument \"%s\": \"%s\"",
-                          arg.c_str(), (i >= argc) ? "" : argv[i]);
+                          arg.c_str(), (i >= expanded_argc) ? "" : args[i]);
             }
             return false;
         }
@@ -417,7 +440,7 @@ ArgOptions SDContextParams::get_options() {
          &tokenizer},
         {"",
          "--llm_vision",
-         "path to the llm vit",
+         "path to the llm vision weights (mmproj). Required for image editing with Qwen Image 2.1 and other VLM edit models using split GGUF text encoders",
          0,
          &llm_vision_path},
         {"",
